@@ -53,6 +53,8 @@ class SalesBot:
         # 3. Генерация ответа
         context = {
             "user_message": user_message,
+            "intent": intent,  # Для retriever'а базы знаний
+            "state": sm_result["next_state"],
             "history": self.history,
             "goal": sm_result["goal"],
             "collected_data": sm_result["collected_data"],
