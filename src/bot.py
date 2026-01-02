@@ -21,7 +21,7 @@ class SalesBot:
         self.history = []
 
     def _get_classification_context(self) -> Dict:
-        """Получить контекст для классификатора"""
+        """Получить контекст для классификатора (включая SPIN-фазу)"""
         from config import SALES_STATES
 
         state_config = SALES_STATES.get(self.state_machine.state, {})
@@ -30,10 +30,14 @@ class SalesBot:
 
         missing = [f for f in required if not collected.get(f)]
 
+        # SPIN-фаза для контекстной классификации
+        spin_phase = state_config.get("spin_phase")
+
         return {
             "state": self.state_machine.state,
             "collected_data": collected.copy(),
             "missing_data": missing,
+            "spin_phase": spin_phase,
         }
 
     def process(self, user_message: str) -> Dict:
@@ -59,6 +63,9 @@ class SalesBot:
             "goal": sm_result["goal"],
             "collected_data": sm_result["collected_data"],
             "missing_data": sm_result["missing_data"],
+            # SPIN-специфичный контекст
+            "spin_phase": sm_result.get("spin_phase"),
+            "optional_data": sm_result.get("optional_data", []),
         }
 
         response = self.generator.generate(sm_result["action"], context)
@@ -74,7 +81,8 @@ class SalesBot:
             "intent": intent,
             "action": sm_result["action"],
             "state": sm_result["next_state"],
-            "is_final": sm_result["is_final"]
+            "is_final": sm_result["is_final"],
+            "spin_phase": sm_result.get("spin_phase"),
         }
 
 
@@ -109,7 +117,8 @@ def run_interactive(bot: SalesBot):
             result = bot.process(user_input)
 
             print(f"Бот: {result['response']}")
-            print(f"  [{result['state']}] {result['action']}\n")
+            spin_info = f" (SPIN: {result['spin_phase']})" if result.get('spin_phase') else ""
+            print(f"  [{result['state']}] {result['action']}{spin_info}\n")
 
             if result["is_final"]:
                 print("[Диалог завершён]")

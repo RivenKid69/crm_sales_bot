@@ -730,7 +730,7 @@ class LemmaClassifier:
 
 
 class DataExtractor:
-    """Извлекаем структурированные данные из сообщения"""
+    """Извлекаем структурированные данные из сообщения (включая SPIN-данные)"""
 
     def extract(self, message: str, context: Dict = None) -> Dict:
         """
@@ -738,20 +738,21 @@ class DataExtractor:
 
         Args:
             message: Сообщение пользователя
-            context: Контекст (missing_data, collected_data) для понимания коротких ответов
+            context: Контекст (missing_data, collected_data, spin_phase) для понимания коротких ответов
         """
         extracted = {}
         message_lower = message.lower().strip()
         context = context or {}
         missing_data = context.get("missing_data", [])
+        spin_phase = context.get("spin_phase")
 
         # === Размер компании ===
         size_patterns = [
-            r'(\d+)\s*(?:человек|чел\.?|менеджер|сотрудник|продаж)',
+            r'(\d+)\s*(?:человек|чел\.?|менеджер|сотрудник|продаж|продавц|официант|повар|работник|кассир)',
             r'нас\s*(\d+)',
             r'команд[аы]?\s*(?:из|в|на)?\s*(\d+)',
             r'отдел[еа]?\s*(\d+)',
-            r'(\d+)\s*(?:в команде|в отделе|человек)',
+            r'(\d+)\s*(?:в команде|в отделе|человек|продавц|официант)',
             r'штат[еа]?\s*(\d+)',
             r'работа[ею]т?\s*(\d+)',
         ]
@@ -1536,6 +1537,150 @@ class DataExtractor:
                 extracted["client_name"] = name_match.group(1)
                 break
 
+        # =================================================================
+        # SPIN-специфичное извлечение данных
+        # =================================================================
+
+        # === Текущие инструменты (для Situation) ===
+        tool_patterns = {
+            r'(?:в\s+)?excel': "Excel",
+            r'(?:в\s+)?эксел': "Excel",
+            r'(?:в\s+)?табли[цч]': "таблицы",
+            r'(?:в\s+)?гугл\s*(?:табли|докс|sheets|docs)': "Google Таблицы",
+            r'(?:в\s+)?1[сc]': "1С",
+            r'(?:в\s+)?битрикс': "Битрикс24",
+            r'(?:в\s+)?амо': "AmoCRM",
+            r'(?:в\s+)?notion': "Notion",
+            r'(?:в\s+)?trello': "Trello",
+            r'(?:на\s+)?бумаг': "на бумаге",
+            r'(?:в\s+)?блокнот': "в блокноте",
+            r'(?:в\s+)?голов': "в головах",
+            r'вручную|руками': "вручную",
+            r'никак|нигде|ничего': "никак не ведём",
+        }
+        for pattern, tool in tool_patterns.items():
+            if re.search(pattern, message_lower):
+                extracted["current_tools"] = tool
+                break
+
+        # === Тип бизнеса (для Situation) ===
+        business_patterns = {
+            r'магазин|розни[цч]|ритейл|retail': "розничная торговля",
+            r'опт(?:ов)?|b2b': "оптовые продажи",
+            r'ресторан|кафе|общепит|еда': "общепит",
+            r'услуг|сервис|service': "сфера услуг",
+            r'салон|красот|spa|спа': "салон красоты",
+            r'клиник|медицин|врач': "медицина",
+            r'недвижим|агентств|риэлтор': "недвижимость",
+            r'склад|логистик|доставк': "логистика",
+            r'производств|завод|фабрик': "производство",
+            r'it|айти|программ|разработ': "IT",
+            r'строител|ремонт': "строительство",
+            r'образован|обучен|курс': "образование",
+        }
+        for pattern, btype in business_patterns.items():
+            if re.search(pattern, message_lower):
+                extracted["business_type"] = btype
+                break
+
+        # === Последствия проблемы (для Implication) ===
+        if spin_phase == "implication" or "pain_impact" in missing_data:
+            impact_patterns = [
+                # Количество потерянных клиентов
+                (r'(\d+)\s*(?:клиент|покупател|заказ)\w*\s*(?:теря|упуска|уход)', 'clients_lost'),
+                (r'(?:теря|упуска)\w*\s*(\d+)\s*(?:клиент|покупател|заказ)', 'clients_lost'),
+                (r'(?:примерно|около|где-то)\s*(\d+)\s*(?:клиент|покупател)', 'clients_lost'),
+                # Время
+                (r'(\d+)\s*(?:час|минут)\w*\s*(?:в\s*день|каждый\s*день|ежедневно)', 'time_daily'),
+                (r'(?:тратим|уходит|занимает)\s*(\d+)\s*(?:час|минут)', 'time_daily'),
+                (r'(\d+)\s*(?:час|минут)\w*\s*(?:в\s*недел|еженедельно)', 'time_weekly'),
+                # Деньги
+                (r'(\d+)\s*(?:тысяч|т\.?р\.?|к)\s*(?:руб|₽)?', 'money_k'),
+                (r'(\d+)\s*(?:миллион|млн|м)\s*(?:руб|₽)?', 'money_m'),
+                (r'(\d+)\s*%\s*(?:выручк|продаж|прибыл)', 'percent'),
+            ]
+
+            for pattern, impact_type in impact_patterns:
+                match = re.search(pattern, message_lower)
+                if match:
+                    value = match.group(1)
+                    if impact_type == 'clients_lost':
+                        extracted["pain_impact"] = f"теряем ~{value} клиентов"
+                    elif impact_type == 'time_daily':
+                        extracted["pain_impact"] = f"тратим ~{value} часов/день"
+                    elif impact_type == 'time_weekly':
+                        extracted["pain_impact"] = f"тратим ~{value} часов/неделю"
+                    elif impact_type == 'money_k':
+                        extracted["pain_impact"] = f"теряем ~{value}к рублей"
+                        extracted["financial_impact"] = f"{value}000"
+                    elif impact_type == 'money_m':
+                        extracted["pain_impact"] = f"теряем ~{value}млн рублей"
+                        extracted["financial_impact"] = f"{value}000000"
+                    elif impact_type == 'percent':
+                        extracted["pain_impact"] = f"теряем ~{value}% выручки"
+                    break
+
+            # Качественные маркеры осознания последствий
+            acknowledgment_patterns = [
+                r'да[,.]?\s*(?:это|согласен|верно|точно)',
+                r'к\s*сожалени',
+                r'(?:серьёзн|критичн|важн)\s*(?:проблем|вопрос)',
+                r'(?:много|часто|постоянно|регулярно)',
+            ]
+            for pattern in acknowledgment_patterns:
+                if re.search(pattern, message_lower):
+                    if "pain_impact" not in extracted:
+                        extracted["pain_impact"] = "осознаёт последствия"
+                    break
+
+        # === Желаемый результат (для Need-Payoff) ===
+        if spin_phase == "need_payoff" or "desired_outcome" in missing_data:
+            need_patterns = {
+                r'(?:хотел|хочу|хотим|хочется)\s*(?:бы\s*)?(?:видеть|знать|понима)': "прозрачность и контроль",
+                r'(?:хотел|хочу|хотим)\s*(?:бы\s*)?автоматиз': "автоматизация процессов",
+                r'(?:хотел|хочу|хотим)\s*(?:бы\s*)?(?:контролир|отслежива)': "контроль работы",
+                r'(?:хотел|хочу|хотим)\s*(?:бы\s*)?(?:экономи|сберечь|сэкономи)': "экономия времени/денег",
+                r'(?:хотел|хочу|хотим)\s*(?:бы\s*)?(?:упрост|ускор)': "упрощение работы",
+                r'(?:хотел|хочу|хотим)\s*(?:бы\s*)?(?:систематиз|наладить|навести\s*порядок)': "систематизация",
+                r'(?:помогло|решило|избавило)\s*(?:бы)?': "решение проблемы",
+                r'было\s*бы\s*(?:отлично|супер|здорово|идеально|круто)': "положительный результат",
+                r'(?:да|конечно|естественно|определённо),?\s*(?:это|помогло|упростило)': "подтверждение ценности",
+            }
+
+            for pattern, outcome in need_patterns.items():
+                if re.search(pattern, message_lower):
+                    extracted["desired_outcome"] = outcome
+                    extracted["value_acknowledged"] = True
+                    break
+
+            # Простые утвердительные ответы на N-вопросы
+            simple_yes = [
+                r'^да[,!.]?\s*$',
+                r'^конечно[,!.]?\s*$',
+                r'^естественно[,!.]?\s*$',
+                r'^было\s*бы\s*(?:здорово|отлично|супер)',
+                r'^(?:да\s*)?помогло\s*бы',
+            ]
+            for pattern in simple_yes:
+                if re.search(pattern, message_lower):
+                    if "desired_outcome" not in extracted:
+                        extracted["desired_outcome"] = "подтверждает ценность решения"
+                        extracted["value_acknowledged"] = True
+                    break
+
+        # === Высокий интерес (для ускорения SPIN) ===
+        high_interest_patterns = [
+            r'(?:очень|сильно|крайне)\s*(?:интересн|нужн|важн)',
+            r'(?:срочно|скорее|быстрее)\s*(?:нужн|надо|хотим)',
+            r'готов\w*\s*(?:сейчас|сразу|прямо)',
+            r'давайте\s*(?:сразу|прямо|начн)',
+            r'хочу\s*(?:демо|попробова|подключи)',
+        ]
+        for pattern in high_interest_patterns:
+            if re.search(pattern, message_lower):
+                extracted["high_interest"] = True
+                break
+
         return extracted
 
 
@@ -1563,21 +1708,72 @@ class HybridClassifier:
 
         Args:
             message: Сообщение пользователя
-            context: Контекст диалога (missing_data, collected_data)
+            context: Контекст диалога (missing_data, collected_data, spin_phase)
 
         Returns:
             {
                 "intent": str,
                 "confidence": float,
                 "extracted_data": dict,
-                "method": str  # "root" | "lemma" | "data"
+                "method": str  # "root" | "lemma" | "data" | "spin"
             }
         """
         # 0. Нормализация текста (опечатки, слипшиеся слова, ё→е и т.д.)
         message = self.normalizer.normalize(message)
 
-        # 1. Извлекаем данные (с учётом контекста)
+        # 1. Извлекаем данные (с учётом контекста и SPIN-фазы)
         extracted = self.data_extractor.extract(message, context)
+
+        # Получаем текущую SPIN-фазу
+        spin_phase = context.get("spin_phase") if context else None
+
+        # =================================================================
+        # SPIN-специфичная классификация на основе извлечённых данных
+        # =================================================================
+
+        # Если в фазе situation и получили данные о ситуации
+        if spin_phase == "situation":
+            if extracted.get("company_size") or extracted.get("current_tools") or extracted.get("business_type"):
+                return {
+                    "intent": "situation_provided",
+                    "confidence": 0.9,
+                    "extracted_data": extracted,
+                    "method": "spin"
+                }
+
+        # Если в фазе problem и получили информацию о боли
+        if spin_phase == "problem":
+            if extracted.get("pain_point"):
+                return {
+                    "intent": "problem_revealed",
+                    "confidence": 0.9,
+                    "extracted_data": extracted,
+                    "method": "spin"
+                }
+
+        # Если в фазе implication и клиент осознаёт последствия
+        if spin_phase == "implication":
+            if extracted.get("pain_impact") or extracted.get("financial_impact"):
+                return {
+                    "intent": "implication_acknowledged",
+                    "confidence": 0.9,
+                    "extracted_data": extracted,
+                    "method": "spin"
+                }
+
+        # Если в фазе need_payoff и клиент выразил желаемый результат
+        if spin_phase == "need_payoff":
+            if extracted.get("desired_outcome") or extracted.get("value_acknowledged"):
+                return {
+                    "intent": "need_expressed",
+                    "confidence": 0.9,
+                    "extracted_data": extracted,
+                    "method": "spin"
+                }
+
+        # =================================================================
+        # Стандартная классификация (если не SPIN-специфичная)
+        # =================================================================
 
         # Если есть данные — это info_provided (высокий приоритет)
         if extracted.get("company_size") or extracted.get("pain_point"):

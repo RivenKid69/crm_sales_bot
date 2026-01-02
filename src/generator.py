@@ -99,6 +99,14 @@ class ResponseGenerator:
         collected = context.get("collected_data", {})
         facts = self.get_facts(collected.get("company_size"))
 
+        # SPIN-специфичные данные
+        current_tools = collected.get("current_tools", "не указано")
+        business_type = collected.get("business_type", "не указано")
+        pain_impact = collected.get("pain_impact", "не определено")
+        financial_impact = collected.get("financial_impact", "")
+        desired_outcome = collected.get("desired_outcome", "не сформулирован")
+        spin_phase = context.get("spin_phase", "")
+
         variables = {
             "system": SYSTEM_PROMPT,
             "user_message": user_message,
@@ -109,9 +117,16 @@ class ResponseGenerator:
             "company_size": collected.get("company_size", "?"),
             "pain_point": collected.get("pain_point", "?"),
             "facts": facts,
-            # НОВОЕ: Добавляем retrieved_facts и company_info
+            # База знаний
             "retrieved_facts": retrieved_facts or "Информация по этому вопросу будет уточнена.",
             "company_info": retriever.get_company_info(),
+            # SPIN-специфичные данные
+            "current_tools": current_tools,
+            "business_type": business_type,
+            "pain_impact": pain_impact,
+            "financial_impact": financial_impact,
+            "desired_outcome": desired_outcome,
+            "spin_phase": spin_phase,
         }
 
         # Подставляем в шаблон
