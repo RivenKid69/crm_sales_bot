@@ -195,7 +195,7 @@ Wipon Cashback — система лояльности:
         KnowledgeSection(
             category="features",
             topic="employees",
-            keywords=["сотрудник", "кадры", "зарплата", "персонал", "работник", "штат", "продавец"],
+            keywords=["сотрудник", "сотрудники", "кадры", "зарплата", "зарплаты", "персонал", "работник", "штат", "продавец", "кадровый"],
             priority=6,
             facts="""
 Кадровый учёт в Wipon:
@@ -307,7 +307,7 @@ Wipon Cashback — система лояльности:
         KnowledgeSection(
             category="pricing",
             topic="wipon_pro_pricing",
-            keywords=["wipon pro цена", "проверка алкоголя цена", "укм стоимость"],
+            keywords=["wipon pro цена", "проверка алкоголя цена", "укм стоимость", "цена wipon pro", "стоимость pro", "pro цена"],
             priority=9,
             facts="""
 Стоимость Wipon Pro (проверка алкоголя):
