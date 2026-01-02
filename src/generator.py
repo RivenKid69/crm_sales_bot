@@ -45,21 +45,26 @@ class ResponseGenerator:
         
         return "\n".join(lines)
     
-    def generate(self, action: str, context: Dict) -> str:
-        """Генерируем ответ"""
-        
+    def _has_chinese(self, text: str) -> bool:
+        """Проверяем есть ли китайские/японские/корейские символы"""
+        import re
+        return bool(re.search(r'[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff]', text))
+
+    def generate(self, action: str, context: Dict, max_retries: int = 3) -> str:
+        """Генерируем ответ с retry при китайских символах"""
+
         # Выбираем шаблон
         if action.startswith("transition_to_"):
             template_key = action.replace("transition_to_", "")
         else:
             template_key = action
-        
+
         template = PROMPT_TEMPLATES.get(template_key, PROMPT_TEMPLATES["continue_current_goal"])
-        
+
         # Собираем переменные
         collected = context.get("collected_data", {})
         facts = self.get_facts(collected.get("company_size"))
-        
+
         variables = {
             "system": SYSTEM_PROMPT,
             "user_message": context.get("user_message", ""),
@@ -71,18 +76,37 @@ class ResponseGenerator:
             "pain_point": collected.get("pain_point", "?"),
             "facts": facts,
         }
-        
+
         # Подставляем в шаблон
         try:
             prompt = template.format(**variables)
         except KeyError as e:
             print(f"Missing variable: {e}")
             prompt = template
-        
-        # Генерируем через LLM
-        response = self.llm.generate(prompt)
-        
-        return self._clean(response)
+
+        # Генерируем с retry при китайских символах
+        best_response = ""
+        for attempt in range(max_retries):
+            response = self.llm.generate(prompt)
+
+            # Если нет китайских символов — сразу возвращаем
+            if not self._has_chinese(response):
+                return self._clean(response)
+
+            # Иначе чистим и сохраняем лучший результат
+            cleaned = self._clean(response)
+            if len(cleaned) > len(best_response):
+                best_response = cleaned
+
+            # Добавляем усиление в промпт для следующей попытки
+            if attempt == 0:
+                prompt = prompt.replace(
+                    "Ответ на русском",
+                    "ВАЖНО: Отвечай ТОЛЬКО на русском языке, без китайских символов!\nОтвет на русском"
+                )
+
+        # Возвращаем лучший результат из попыток
+        return best_response if best_response else "Чем могу помочь?"
     
     def _clean(self, text: str) -> str:
         """Убираем лишнее и фильтруем нерусский текст"""
@@ -95,8 +119,9 @@ class ResponseGenerator:
             if text.startswith(prefix):
                 text = text[len(prefix):].strip()
 
-        # Удаляем китайские/японские/корейские символы (Qwen иногда переключается)
-        text = re.sub(r'[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff]+', '', text)
+        # Удаляем китайские/японские/корейские символы и пунктуацию (Qwen иногда переключается)
+        # Иероглифы + китайская пунктуация (。，！？：；「」『』【】)
+        text = re.sub(r'[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff\u3000-\u303f\uff00-\uffef]+', '', text)
 
         # Удаляем строки начинающиеся с извинений на китайском
         lines = text.split('\n')
