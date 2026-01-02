@@ -505,6 +505,22 @@ from config import (
 PRIORITY_PATTERNS: List[Tuple[str, str, float]] = [
     # (pattern, intent, confidence)
 
+    # === PRODUCT QUESTIONS (вопросы о продукте) ===
+    # "что такое X", "что это X", "что за X"
+    (r'что\s+такое', "question_features", 0.9),
+    (r'что\s+это\s+за', "question_features", 0.9),
+    (r'что\s+за\s+\w+', "question_features", 0.85),
+    # "расскажи(те) о/про X", "подробнее о X"
+    # Note: normalizer may change "расскаж" to "раскаж", so use ras+kazh pattern
+    (r'рас+каж\w*\s+(?:о|про|об)\b', "question_features", 0.9),
+    (r'подробн\w*\s+(?:о|про|об)\b', "question_features", 0.85),
+    # "что это" в конце (напр. "wipon что это")
+    (r'\w+\s+что\s+это', "question_features", 0.85),
+    # "хочу узнать о/про"
+    (r'хо[чт]\w*\s+узнать\s+(?:о|про|об)\b', "question_features", 0.85),
+    # "что вы предлагаете", "что предлагаете"
+    (r'что\s+(?:вы\s+)?предлага', "question_features", 0.85),
+
     # === CLARIFICATION (уточнение — "нет" + позитивный контекст) ===
     # Важно: эти паттерны ПЕРЕД rejection, чтобы "нет, кое-что конкретное" не стало отказом
     # "нет, кое что/кое-что" — уточнение запроса
