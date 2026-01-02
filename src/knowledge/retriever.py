@@ -166,8 +166,8 @@ class KnowledgeRetriever:
 _retriever = None
 
 
-def get_retriever(use_embeddings: bool = False) -> KnowledgeRetriever:
-    """Получить инстанс retriever'а"""
+def get_retriever(use_embeddings: bool = True) -> KnowledgeRetriever:
+    """Получить инстанс retriever'а (с эмбеддингами по умолчанию)"""
     global _retriever
     if _retriever is None:
         _retriever = KnowledgeRetriever(use_embeddings=use_embeddings)
