@@ -4,6 +4,7 @@
 
 from typing import Dict, List
 from config import SYSTEM_PROMPT, PROMPT_TEMPLATES, KNOWLEDGE
+from knowledge.retriever import get_retriever
 
 
 class ResponseGenerator:
@@ -73,6 +74,19 @@ class ResponseGenerator:
     def generate(self, action: str, context: Dict, max_retries: int = 3) -> str:
         """Генерируем ответ с retry при китайских символах"""
 
+        # НОВОЕ: Получаем релевантные факты из базы знаний
+        retriever = get_retriever()
+        intent = context.get("intent", "")
+        state = context.get("state", "")
+        user_message = context.get("user_message", "")
+
+        retrieved_facts = retriever.retrieve(
+            message=user_message,
+            intent=intent,
+            state=state,
+            top_k=2
+        )
+
         # Выбираем шаблон
         if action.startswith("transition_to_"):
             template_key = action.replace("transition_to_", "")
@@ -87,7 +101,7 @@ class ResponseGenerator:
 
         variables = {
             "system": SYSTEM_PROMPT,
-            "user_message": context.get("user_message", ""),
+            "user_message": user_message,
             "history": self.format_history(context.get("history", [])),
             "goal": context.get("goal", ""),
             "collected_data": str(collected),
@@ -95,6 +109,9 @@ class ResponseGenerator:
             "company_size": collected.get("company_size", "?"),
             "pain_point": collected.get("pain_point", "?"),
             "facts": facts,
+            # НОВОЕ: Добавляем retrieved_facts и company_info
+            "retrieved_facts": retrieved_facts or "Информация по этому вопросу будет уточнена.",
+            "company_info": retriever.get_company_info(),
         }
 
         # Подставляем в шаблон
