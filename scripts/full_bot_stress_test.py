@@ -10,10 +10,16 @@
 - Pain extraction
 - Полные диалоговые сценарии
 
+РЕЖИМЫ РАБОТЫ:
+    --mode static   : только фиксированные сценарии (детерминированно)
+    --mode random   : только случайные сценарии (уникальны каждый раз)
+    --mode mixed    : фиксированные + случайные (по умолчанию)
+
 Запуск:
-    python scripts/full_bot_stress_test.py
+    python scripts/full_bot_stress_test.py                    # mixed mode
+    python scripts/full_bot_stress_test.py --mode random -n 50  # 50 случайных сценариев
     python scripts/full_bot_stress_test.py --verbose
-    python scripts/full_bot_stress_test.py --fix  # автоисправление
+    python scripts/full_bot_stress_test.py --seed 42          # воспроизводимый тест
 """
 
 import sys
@@ -21,11 +27,14 @@ import os
 import json
 import asyncio
 import argparse
+import random
+import time
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass, field
 from enum import Enum
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
 # Импорты компонентов бота
 try:
@@ -38,6 +47,14 @@ try:
 except ImportError as e:
     print(f"⚠️  Не все компоненты доступны: {e}")
     HAS_BOT_COMPONENTS = False
+
+# Импорт генератора диалогов
+try:
+    from dialog_generator import ScenarioGenerator, MessageVariator, GeneratedScenario
+    HAS_GENERATOR = True
+except ImportError as e:
+    print(f"⚠️  Генератор диалогов недоступен: {e}")
+    HAS_GENERATOR = False
 
 
 # =============================================================================
@@ -741,23 +758,52 @@ PAIN_TEST_CASES = [
 class BotStressTester:
     """Полный стресс-тестировщик бота"""
 
-    def __init__(self, verbose: bool = False, auto_fix: bool = False):
+    def __init__(
+        self,
+        verbose: bool = False,
+        auto_fix: bool = False,
+        mode: str = "mixed",
+        num_random: int = 20,
+        seed: int = None
+    ):
         self.verbose = verbose
         self.auto_fix = auto_fix
+        self.mode = mode  # "static", "random", "mixed"
+        self.num_random = num_random
+        self.seed = seed
+
+        # Установка seed для воспроизводимости
+        if seed is not None:
+            random.seed(seed)
+
         self.retriever = KnowledgeRetriever(use_embeddings=False)
         self.results = {
             "intent": {"passed": 0, "failed": 0, "failures": []},
             "knowledge": {"passed": 0, "failed": 0, "failures": []},
-            "dialog": {"passed": 0, "failed": 0, "failures": []},
+            "dialog_static": {"passed": 0, "failed": 0, "failures": []},
+            "dialog_random": {"passed": 0, "failed": 0, "failures": []},
+            "dialog_edge": {"passed": 0, "failed": 0, "failures": []},
             "pain": {"passed": 0, "failed": 0, "failures": []},
         }
         self.fix_suggestions = []
 
+        # Инициализация генератора
+        self.generator = None
+        if HAS_GENERATOR:
+            self.generator = ScenarioGenerator(seed=seed)
+
     def run_all_tests(self):
         """Запуск всех тестов"""
+        start_time = time.time()
+
         print("=" * 70)
         print("ПОЛНЫЙ СТРЕСС-ТЕСТ ЧАТБОТА WIPON")
         print("=" * 70)
+        print(f"Режим: {self.mode.upper()}")
+        if self.seed is not None:
+            print(f"Seed: {self.seed} (воспроизводимый)")
+        if self.mode in ("random", "mixed"):
+            print(f"Случайных сценариев: {self.num_random}")
         print()
 
         # 1. Тест Intent Classifier
@@ -769,17 +815,27 @@ class BotStressTester:
         # 2. Тест Knowledge Retriever
         self.test_knowledge_retriever()
 
-        # 3. Тест диалоговых сценариев
-        self.test_dialog_scenarios()
+        # 3. Тест статических диалоговых сценариев
+        if self.mode in ("static", "mixed"):
+            self.test_dialog_scenarios_static()
 
-        # 4. Тест Pain Extractor
+        # 4. Тест случайных диалоговых сценариев
+        if self.mode in ("random", "mixed") and HAS_GENERATOR:
+            self.test_dialog_scenarios_random()
+            self.test_dialog_scenarios_edge_cases()
+        elif self.mode in ("random", "mixed") and not HAS_GENERATOR:
+            print("⚠️  Генератор недоступен, случайные тесты пропущены")
+
+        # 5. Тест Pain Extractor
         if HAS_BOT_COMPONENTS:
             self.test_pain_extractor()
         else:
             print("⚠️  Pain Extractor недоступен, пропускаем")
 
+        elapsed = time.time() - start_time
+
         # Итоги
-        self.print_summary()
+        self.print_summary(elapsed)
 
         # Предложения по исправлению
         if self.fix_suggestions:
@@ -863,10 +919,10 @@ class BotStressTester:
         total = self.results["knowledge"]["passed"] + self.results["knowledge"]["failed"]
         print(f"\nKnowledge Retriever: {self.results['knowledge']['passed']}/{total}")
 
-    def test_dialog_scenarios(self):
-        """Тест диалоговых сценариев"""
+    def test_dialog_scenarios_static(self):
+        """Тест статических (фиксированных) диалоговых сценариев"""
         print("\n" + "=" * 50)
-        print("ТЕСТ ДИАЛОГОВЫХ СЦЕНАРИЕВ")
+        print("ТЕСТ СТАТИЧЕСКИХ ДИАЛОГОВЫХ СЦЕНАРИЕВ")
         print("=" * 50)
 
         for scenario in DIALOG_SCENARIOS:
@@ -914,14 +970,133 @@ class BotStressTester:
                             })
 
             if scenario_passed:
-                self.results["dialog"]["passed"] += 1
+                self.results["dialog_static"]["passed"] += 1
                 print(f"  → Сценарий PASSED")
             else:
-                self.results["dialog"]["failed"] += 1
+                self.results["dialog_static"]["failed"] += 1
                 print(f"  → Сценарий FAILED")
 
-        total = self.results["dialog"]["passed"] + self.results["dialog"]["failed"]
-        print(f"\nДиалоговые сценарии: {self.results['dialog']['passed']}/{total}")
+        total = self.results["dialog_static"]["passed"] + self.results["dialog_static"]["failed"]
+        print(f"\nСтатические сценарии: {self.results['dialog_static']['passed']}/{total}")
+
+    def test_dialog_scenarios_random(self):
+        """Тест случайно сгенерированных диалоговых сценариев"""
+        if not self.generator:
+            print("⚠️  Генератор недоступен")
+            return
+
+        print("\n" + "=" * 50)
+        print(f"ТЕСТ СЛУЧАЙНЫХ ДИАЛОГОВЫХ СЦЕНАРИЕВ ({self.num_random} шт)")
+        print("=" * 50)
+
+        scenarios = self.generator.generate_batch(self.num_random)
+
+        for scenario in scenarios:
+            if self.verbose:
+                print(f"\n--- {scenario.name} ---")
+                print(f"    Персона: {scenario.persona}, Бизнес: {scenario.business_type}")
+
+            scenario_passed = True
+            failed_turns = []
+
+            for turn in scenario.turns:
+                # Пропускаем приветствия, согласия, отказы - там нет knowledge retrieval
+                if turn.expected_topic in ("greeting", "agreement", "rejection", "unknown"):
+                    continue
+
+                # Тест knowledge retrieval
+                facts = self.retriever.retrieve(turn.user_message, top_k=3)
+
+                # Проверка что хоть что-то нашли
+                if not facts:
+                    if turn.expected_keywords:
+                        scenario_passed = False
+                        failed_turns.append((turn.user_message, "пустой результат"))
+                    continue
+
+                # Проверка ожидаемых keywords
+                if turn.expected_keywords:
+                    found_any = any(
+                        kw.lower() in facts.lower()
+                        for kw in turn.expected_keywords
+                    )
+                    if not found_any:
+                        scenario_passed = False
+                        failed_turns.append((turn.user_message, f"не найдены keywords: {turn.expected_keywords}"))
+
+            if scenario_passed:
+                self.results["dialog_random"]["passed"] += 1
+                if self.verbose:
+                    print(f"  → PASSED")
+            else:
+                self.results["dialog_random"]["failed"] += 1
+                print(f"\n--- {scenario.name} FAILED ---")
+                print(f"    Персона: {scenario.persona}, Бизнес: {scenario.business_type}")
+                for msg, reason in failed_turns[:3]:  # Показываем максимум 3 ошибки
+                    print(f"  ✗ \"{msg[:50]}...\"")
+                    print(f"    Причина: {reason}")
+
+                # Добавляем предложение по исправлению
+                if failed_turns:
+                    first_fail = failed_turns[0]
+                    self.fix_suggestions.append({
+                        "component": "knowledge_data",
+                        "issue": f"Случайный сценарий: '{first_fail[0][:40]}...' - {first_fail[1]}",
+                        "suggestion": "Добавить keywords или расширить базу знаний"
+                    })
+
+        total = self.results["dialog_random"]["passed"] + self.results["dialog_random"]["failed"]
+        print(f"\nСлучайные сценарии: {self.results['dialog_random']['passed']}/{total}")
+
+    def test_dialog_scenarios_edge_cases(self):
+        """Тест граничных случаев"""
+        if not self.generator:
+            return
+
+        print("\n" + "=" * 50)
+        print("ТЕСТ ГРАНИЧНЫХ СЛУЧАЕВ")
+        print("=" * 50)
+
+        edge_cases = self.generator.generate_edge_cases()
+
+        for scenario in edge_cases:
+            print(f"\n--- {scenario.name} ---")
+
+            scenario_passed = True
+
+            for turn in scenario.turns:
+                if turn.expected_topic in ("greeting", "agreement", "rejection", "unknown"):
+                    continue
+
+                facts = self.retriever.retrieve(turn.user_message, top_k=3)
+
+                # Для edge cases просто проверяем что не упало и вернуло что-то осмысленное
+                if turn.expected_keywords:
+                    found_any = any(
+                        kw.lower() in facts.lower()
+                        for kw in turn.expected_keywords
+                    ) if facts else False
+
+                    if not found_any and facts:
+                        # Не нашли keywords, но хоть что-то нашли - частичный успех
+                        if self.verbose:
+                            print(f"  ~ \"{turn.user_message[:40]}...\" → частичный результат")
+                    elif not found_any:
+                        scenario_passed = False
+                        print(f"  ✗ \"{turn.user_message[:40]}...\"")
+                        print(f"    Ожидались keywords: {turn.expected_keywords}")
+                    elif self.verbose:
+                        print(f"  ✓ \"{turn.user_message[:40]}...\"")
+
+            if scenario_passed:
+                self.results["dialog_edge"]["passed"] += 1
+                print(f"  → PASSED")
+            else:
+                self.results["dialog_edge"]["failed"] += 1
+                print(f"  → FAILED")
+
+        total = self.results["dialog_edge"]["passed"] + self.results["dialog_edge"]["failed"]
+        print(f"\nГраничные случаи: {self.results['dialog_edge']['passed']}/{total}")
 
     def test_pain_extractor(self):
         """Тест экстрактора боли"""
@@ -954,7 +1129,7 @@ class BotStressTester:
         total = self.results["pain"]["passed"] + self.results["pain"]["failed"]
         print(f"\nPain Extractor: {self.results['pain']['passed']}/{total}")
 
-    def print_summary(self):
+    def print_summary(self, elapsed: float = 0):
         """Итоговая статистика"""
         print("\n" + "=" * 70)
         print("ИТОГОВАЯ СТАТИСТИКА")
@@ -963,6 +1138,16 @@ class BotStressTester:
         total_passed = sum(r["passed"] for r in self.results.values())
         total_failed = sum(r["failed"] for r in self.results.values())
         total = total_passed + total_failed
+
+        # Названия для отображения
+        display_names = {
+            "intent": "Intent Classifier",
+            "knowledge": "Knowledge Base",
+            "dialog_static": "Статич. диалоги",
+            "dialog_random": "Случайн. диалоги",
+            "dialog_edge": "Граничные случаи",
+            "pain": "Pain Extractor",
+        }
 
         print(f"""
 ┌────────────────────────┬─────────┬─────────┬─────────┐
@@ -973,19 +1158,25 @@ class BotStressTester:
             p = stats["passed"]
             f = stats["failed"]
             t = p + f
+            if t == 0:  # Пропущенный тест
+                continue
             pct = (100 * p / t) if t > 0 else 0
             status = "✓" if f == 0 else "✗"
-            print(f"│ {status} {name:<19} │ {p:>7} │ {f:>7} │ {pct:>6.1f}% │")
+            display_name = display_names.get(name, name)
+            print(f"│ {status} {display_name:<19} │ {p:>7} │ {f:>7} │ {pct:>6.1f}% │")
 
         print(f"""├────────────────────────┼─────────┼─────────┼─────────┤
 │ ВСЕГО                  │ {total_passed:>7} │ {total_failed:>7} │ {100*total_passed/total if total else 0:>6.1f}% │
 └────────────────────────┴─────────┴─────────┴─────────┘
 """)
 
+        if elapsed > 0:
+            print(f"Время выполнения: {elapsed:.2f} сек")
+
         if total_failed == 0:
-            print("🎉 ВСЕ ТЕСТЫ ПРОШЛИ!")
+            print("\n🎉 ВСЕ ТЕСТЫ ПРОШЛИ!")
         else:
-            print(f"⚠️  НАЙДЕНО {total_failed} ПРОБЛЕМ")
+            print(f"\n⚠️  НАЙДЕНО {total_failed} ПРОБЛЕМ")
 
     def print_fix_suggestions(self):
         """Вывод предложений по исправлению"""
@@ -1012,12 +1203,55 @@ class BotStressTester:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Полный стресс-тест бота")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Подробный вывод")
-    parser.add_argument("--fix", "-f", action="store_true", help="Автоисправление (TODO)")
+    parser = argparse.ArgumentParser(
+        description="Полный стресс-тест бота Wipon",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Примеры:
+  python scripts/full_bot_stress_test.py                     # Стандартный mixed режим
+  python scripts/full_bot_stress_test.py --mode random -n 50  # 50 случайных сценариев
+  python scripts/full_bot_stress_test.py --mode static       # Только фиксированные тесты
+  python scripts/full_bot_stress_test.py --seed 42           # Воспроизводимый тест
+  python scripts/full_bot_stress_test.py -v                  # Подробный вывод
+        """
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Подробный вывод всех тестов"
+    )
+    parser.add_argument(
+        "--fix", "-f",
+        action="store_true",
+        help="Автоисправление (TODO)"
+    )
+    parser.add_argument(
+        "--mode", "-m",
+        choices=["static", "random", "mixed"],
+        default="mixed",
+        help="Режим тестирования: static (только фиксированные), random (только случайные), mixed (оба)"
+    )
+    parser.add_argument(
+        "-n", "--num-random",
+        type=int,
+        default=20,
+        help="Количество случайных сценариев для генерации (по умолчанию: 20)"
+    )
+    parser.add_argument(
+        "--seed", "-s",
+        type=int,
+        default=None,
+        help="Seed для воспроизводимых случайных тестов"
+    )
     args = parser.parse_args()
 
-    tester = BotStressTester(verbose=args.verbose, auto_fix=args.fix)
+    tester = BotStressTester(
+        verbose=args.verbose,
+        auto_fix=args.fix,
+        mode=args.mode,
+        num_random=args.num_random,
+        seed=args.seed
+    )
     tester.run_all_tests()
 
     return 0 if sum(r["failed"] for r in tester.results.values()) == 0 else 1
