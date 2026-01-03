@@ -26,3 +26,8 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Voice bot
+voice_bot/models/
+voice_bot/audio/
+voice_bot/venv/
