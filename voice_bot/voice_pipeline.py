@@ -1,6 +1,6 @@
 """
 Full Voice Bot Pipeline: STT -> LLM -> TTS
-Real-time voice conversation with XTTS-ru-ipa
+Real-time voice conversation with F5-TTS
 """
 import time
 import torch
@@ -12,17 +12,15 @@ from pathlib import Path
 from dataclasses import dataclass
 
 from faster_whisper import WhisperModel
-from TTS.tts.configs.xtts_config import XttsConfig
-from TTS.tts.models.xtts import Xtts
-from omogre import Transcriptor
+from f5_tts.api import F5TTS
 
 
 SAMPLE_RATE = 16000
 AUDIO_DIR = Path(__file__).parent / "audio"
 AUDIO_DIR.mkdir(exist_ok=True)
 
-MODEL_DIR = Path(__file__).parent / "models" / "xtts-ru-ipa"
-REFERENCE_AUDIO = MODEL_DIR / "reference_audio.wav"
+# Optional reference audio for voice cloning
+REFERENCE_AUDIO = AUDIO_DIR / "reference.wav"
 
 
 @dataclass
@@ -52,7 +50,7 @@ class PipelineMetrics:
 
 
 class VoicePipeline:
-    """Full voice conversation pipeline with XTTS-ru-ipa"""
+    """Full voice conversation pipeline with F5-TTS"""
 
     def __init__(
         self,
@@ -77,34 +75,16 @@ class VoicePipeline:
         )
         print(f"   ✅ Whisper loaded in {time.time() - stt_start:.2f}s")
 
-        # Initialize TTS (XTTS-ru-ipa)
-        print("\n📥 Loading XTTS-ru-ipa model...")
+        # Initialize TTS (F5-TTS)
+        print("\n📥 Loading F5-TTS model...")
         tts_start = time.time()
+        self.tts = F5TTS(device=self.device)
+        print(f"   ✅ F5-TTS loaded in {time.time() - tts_start:.2f}s")
 
-        config = XttsConfig()
-        config.load_json(str(MODEL_DIR / "config.json"))
-
-        self.tts = Xtts.init_from_config(config)
-        self.tts.load_checkpoint(
-            config,
-            checkpoint_dir=str(MODEL_DIR),
-            checkpoint_path=str(MODEL_DIR / "model.pth"),
-            vocab_path=str(MODEL_DIR / "vocab.json"),
-            eval=True,
-            use_deepspeed=False
-        )
-        self.tts.to(self.device)
-
-        # Load transcriptor for IPA
-        print("   Loading IPA transcriptor...")
-        self.transcriptor = Transcriptor()
-
-        # Compute speaker latents
-        print("   Computing speaker latents...")
-        self.gpt_cond_latent, self.speaker_embedding = self.tts.get_conditioning_latents(
-            audio_path=[str(REFERENCE_AUDIO)]
-        )
-        print(f"   ✅ XTTS loaded in {time.time() - tts_start:.2f}s")
+        # Reference audio for voice cloning (optional)
+        self.ref_audio = str(REFERENCE_AUDIO) if REFERENCE_AUDIO.exists() else None
+        if self.ref_audio:
+            print(f"   Using reference voice: {REFERENCE_AUDIO.name}")
 
         # System prompt
         self.system_prompt = """Ты голосовой ассистент. Отвечай кратко и естественно, как в разговоре.
@@ -144,23 +124,15 @@ class VoicePipeline:
         return text, elapsed
 
     def text_to_speech(self, text: str) -> tuple[np.ndarray, int, float]:
-        """Convert text to speech using XTTS-ru-ipa"""
-        # Convert to IPA
-        ipa_text = self.transcriptor([text])[0]
-
+        """Convert text to speech using F5-TTS"""
         start = time.time()
 
-        out = self.tts.inference(
-            text=ipa_text,
-            language="ru",
-            gpt_cond_latent=self.gpt_cond_latent,
-            speaker_embedding=self.speaker_embedding,
-            temperature=0.7,
-            enable_text_splitting=True
+        audio, sample_rate, _ = self.tts.infer(
+            ref_file=self.ref_audio,
+            ref_text="",
+            gen_text=text,
+            seed=-1,
         )
-
-        audio = out["wav"]
-        sample_rate = 24000
 
         elapsed = time.time() - start
 
@@ -233,7 +205,7 @@ class VoicePipeline:
 def main():
     """Interactive voice bot"""
     print("\n" + "=" * 60)
-    print("🎙️  Voice Bot Pipeline (XTTS-ru-ipa)")
+    print("🎙️  Voice Bot Pipeline (F5-TTS)")
     print("=" * 60)
 
     # Initialize pipeline
